@@ -1,8 +1,8 @@
 #!/bin/bash
-# log_monitor.sh - Einheitliches Log-Monitoring
+# log_monitor.sh - unified Log-Monitoring
 # Automatically installed by deploy.sh
 
-# HOME_DIR aus Environment
+# HOME_DIR from environment
 HOME_DIR="${HOME_DIR:-/home/pacs}"
 
 # QUICK STATUS CHECK
