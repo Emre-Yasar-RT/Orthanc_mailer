@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  orthanc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    ports:
+      - "${HOST_HTTP_PORT}:${HOST_HTTP_PORT}"
+      - "${HOST_DICOM_PORT}:${HOST_DICOM_PORT}"
+    volumes:
+      # Persistent Orthanc-database and Storage
+      - orthanc-storage:/var/lib/orthanc/storage    # Active DICOM-Files  
+      - orthanc-index:/var/lib/orthanc/index        # Orthanc-Database
+      - orthanc-logs:/var/log/orthanc               # Logs
+      
+      # Archive (old studies as ZIP)
+      - orthanc-archive:/var/lib/orthanc/archive    
+      
+      # Configuration
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - "${HOST_EXPORTS_PATH}:/exports"
+      - ./plugin/export-plugin/libExportPlugin.so:/plugins/libExportPlugin.so:ro
+      - ./plugin/queue-plugin/libQueuePlugin.so:/plugins/libQueuePlugin.so:ro
+      - ./plugin/filesender-plugin/libFilesenderPlugin.so:/plugins/libFilesenderPlugin.so:ro
+      - "${HOST_MAILQUEUE_PATH}:/mailqueue"
+      - "${HOME_DIR}/logs:/logs"
+    environment:
+      - ARCHIVE_ENABLED=true
+      - ARCHIVE_AGE_DAYS=730
+      - ARCHIVE_PATH=/var/lib/orthanc/archive
+      - ORTHANC_URL=${ORTHANC_URL}
+      - FILESENDER_USERNAME=${FILESENDER_USERNAME}
+      - FILESENDER_API_KEY=${FILESENDER_API_KEY}
+      - SERVER_HOSTNAME=${SERVER_HOSTNAME}
+      - HOME_DIR=${HOME_DIR} 
+
+volumes:
+  orthanc-storage:     # DICOM-Files (.dcm)
+    driver: local
+  orthanc-index:       # Orthanc-dateabase (SQLite)
+    driver: local  
+  orthanc-logs:        # Logs
+    driver: local
+    
+  # ARCHIVE: Old Studies as ZIP
+  orthanc-archive:     
+    driver: local

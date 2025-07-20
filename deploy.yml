@@ -1,0 +1,351 @@
+---
+- name: Deploy Orthanc DICOM Server with Plugins
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: yes
+  
+  # Read configuration from environment variables (set by deploy-config.sh)
+  vars:
+    home_dir: "{{ ansible_env.HOME_DIR }}"
+    repo: "{{ ansible_env.REPO }}"
+    server_hostname: "{{ ansible_env.SERVER_HOSTNAME }}"
+    http_port: "{{ ansible_env.HTTP_PORT }}"
+    dicom_port: "{{ ansible_env.DICOM_PORT }}"
+    dicom_aet: "{{ ansible_env.DICOM_AET }}"
+    log_level: "{{ ansible_env.LOG_LEVEL }}"
+    archive_age_days: "{{ ansible_env.ARCHIVE_AGE_DAYS }}"
+    
+    dicom_modality_1_name: "{{ ansible_env.DICOM_MODALITY_1_NAME }}"
+    dicom_modality_1_aet: "{{ ansible_env.DICOM_MODALITY_1_AET }}"
+    dicom_modality_1_host: "{{ ansible_env.DICOM_MODALITY_1_HOST }}"
+    dicom_modality_1_port: "{{ ansible_env.DICOM_MODALITY_1_PORT }}"
+    
+    dicom_modality_2_name: "{{ ansible_env.DICOM_MODALITY_2_NAME }}"
+    dicom_modality_2_aet: "{{ ansible_env.DICOM_MODALITY_2_AET }}"
+    dicom_modality_2_host: "{{ ansible_env.DICOM_MODALITY_2_HOST }}"
+    dicom_modality_2_port: "{{ ansible_env.DICOM_MODALITY_2_PORT }}"
+    
+    filesender_username: "{{ ansible_env.FILESENDER_USERNAME }}"
+    filesender_api_key: "{{ ansible_env.FILESENDER_API_KEY }}"
+    
+    # Derived paths
+    deployment_path: "{{ home_dir }}/deployment"
+    tmp_clone: "{{ home_dir }}/tmp-clone"
+    cron_script: "{{ home_dir }}/cronjob.sh"
+    cron_flag: "{{ home_dir }}/.cronjob-initialized"
+    log_monitor_script: "{{ home_dir }}/log_monitor.sh"
+    orthanc_url: "http://{{ server_hostname }}:{{ http_port }}"
+    cron_user: "pacs"
+
+  tasks:
+    # ==========================================
+    # VALIDATION
+    # ==========================================
+    - name: Validate required environment variables
+      assert:
+        that:
+          - ansible_env.HOME_DIR is defined
+          - ansible_env.REPO is defined
+          - ansible_env.HTTP_PORT is defined
+          - ansible_env.DICOM_PORT is defined
+          - ansible_env.FILESENDER_USERNAME is defined
+          - ansible_env.FILESENDER_API_KEY is defined
+        fail_msg: "Required environment variables missing. Please run deploy-config.sh"
+
+    - name: Display deployment configuration
+      debug:
+        msg:
+          - "Starting Orthanc deployment..."
+          - "Home Directory: {{ home_dir }}"
+          - "Repository: {{ repo }}"
+          - "HTTP Port: {{ http_port }}"
+          - "DICOM Port: {{ dicom_port }}"
+
+    # ==========================================
+    # REPOSITORY AND BUILD
+    # ==========================================
+    - name: Remove existing temporary clone
+      file:
+        path: "{{ tmp_clone }}"
+        state: absent
+
+    - name: Clone repository
+      git:
+        repo: "{{ repo }}"
+        dest: "{{ tmp_clone }}"
+        force: yes
+
+    - name: Remove existing deployment directory
+      file:
+        path: "{{ deployment_path }}"
+        state: absent
+
+    - name: Create deployment directory
+      file:
+        path: "{{ deployment_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy deployment files
+      synchronize:
+        src: "{{ tmp_clone }}/deployment/"
+        dest: "{{ deployment_path }}/"
+        delete: yes
+        recursive: yes
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Build plugin
+      shell: |
+        cd "{{ deployment_path }}/plugin"
+        bash build-plugin.sh
+      environment:
+        BUILD_PLUGIN: "true"
+
+    # ==========================================
+    # SCRIPTS AND DIRECTORIES
+    # ==========================================
+    - name: Copy cronjob script
+      copy:
+        src: "{{ tmp_clone }}/cronjob.sh"
+        dest: "{{ cron_script }}"
+        mode: '0755'
+        owner: "{{ cron_user }}"
+        group: "{{ cron_user }}"
+      when: (tmp_clone + '/cronjob.sh') is file
+
+    - name: Copy log monitor script
+      copy:
+        src: "{{ tmp_clone }}/log_monitor.sh"
+        dest: "{{ log_monitor_script }}"
+        mode: '0755'
+        owner: "{{ cron_user }}"
+        group: "{{ cron_user }}"
+      when: (tmp_clone + '/log_monitor.sh') is file
+
+    - name: Setup mailer cron job
+      cron:
+        name: "Orthanc Mailer"
+        minute: "*/10"
+        job: "{{ cron_script }}"
+        user: "{{ cron_user }}"
+      when: 
+        - (cron_flag) is not file
+        - (cron_script) is file
+
+    - name: Create cron flag file
+      file:
+        path: "{{ cron_flag }}"
+        state: touch
+        owner: "{{ cron_user }}"
+        group: "{{ cron_user }}"
+      when: 
+        - (cron_flag) is not file
+        - (cron_script) is file
+
+    - name: Create required directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ deployment_path }}/exports"
+        - "{{ home_dir }}/mailqueue"
+        - "{{ home_dir }}/archive"
+        - "{{ home_dir }}/logs/deployment"
+        - "{{ home_dir }}/logs/filesender"
+        - "{{ home_dir }}/logs/orthanc"
+
+    # ==========================================
+    # PYTHON DEPENDENCIES
+    # ==========================================
+    - name: Verify Python requests module
+      shell: python3 -c "import requests"
+      register: requests_check
+      failed_when: requests_check.rc != 0
+      changed_when: false
+
+    # ==========================================
+    # CONFIGURATION TEMPLATES
+    # ==========================================
+    - name: Generate .env file from template
+      replace:
+        path: "{{ deployment_path }}/.env"
+        regexp: "{{ item.pattern }}"
+        replace: "{{ item.value }}"
+        backup: yes
+      loop:
+        - { pattern: '\{\{HOME_DIR\}\}', value: "{{ home_dir }}" }
+        - { pattern: '\{\{REPO\}\}', value: "{{ repo }}" }
+        - { pattern: '\{\{SERVER_HOSTNAME\}\}', value: "{{ server_hostname }}" }
+        - { pattern: '\{\{HTTP_PORT\}\}', value: "{{ http_port }}" }
+        - { pattern: '\{\{DICOM_PORT\}\}', value: "{{ dicom_port }}" }
+        - { pattern: '\{\{DICOM_AET\}\}', value: "{{ dicom_aet }}" }
+        - { pattern: '\{\{LOG_LEVEL\}\}', value: "{{ log_level }}" }
+        - { pattern: '\{\{ARCHIVE_AGE_DAYS\}\}', value: "{{ archive_age_days }}" }
+        - { pattern: '\{\{ORTHANC_URL\}\}', value: "{{ orthanc_url }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_NAME\}\}', value: "{{ dicom_modality_1_name }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_AET\}\}', value: "{{ dicom_modality_1_aet }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_HOST\}\}', value: "{{ dicom_modality_1_host }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_PORT\}\}', value: "{{ dicom_modality_1_port }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_NAME\}\}', value: "{{ dicom_modality_2_name }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_AET\}\}', value: "{{ dicom_modality_2_aet }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_HOST\}\}', value: "{{ dicom_modality_2_host }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_PORT\}\}', value: "{{ dicom_modality_2_port }}" }
+        - { pattern: '\{\{FILESENDER_USERNAME\}\}', value: "{{ filesender_username }}" }
+        - { pattern: '\{\{FILESENDER_API_KEY\}\}', value: "{{ filesender_api_key }}" }
+      when: (tmp_clone + '/deployment/.env.template') is file
+
+    - name: Copy .env template first
+      copy:
+        src: "{{ tmp_clone }}/deployment/.env.template"
+        dest: "{{ deployment_path }}/.env"
+      when: (tmp_clone + '/deployment/.env.template') is file
+
+    - name: Generate orthanc.json from template
+      replace:
+        path: "{{ deployment_path }}/orthanc.json"
+        regexp: "{{ item.pattern }}"
+        replace: "{{ item.value }}"
+        backup: yes
+      loop:
+        - { pattern: '\{\{HTTP_PORT\}\}', value: "{{ http_port }}" }
+        - { pattern: '\{\{DICOM_PORT\}\}', value: "{{ dicom_port }}" }
+        - { pattern: '\{\{DICOM_AET\}\}', value: "{{ dicom_aet }}" }
+        - { pattern: '\{\{LOG_LEVEL\}\}', value: "{{ log_level }}" }
+        - { pattern: '\{\{ARCHIVE_AGE_DAYS\}\}', value: "{{ archive_age_days }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_NAME\}\}', value: "{{ dicom_modality_1_name }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_AET\}\}', value: "{{ dicom_modality_1_aet }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_HOST\}\}', value: "{{ dicom_modality_1_host }}" }
+        - { pattern: '\{\{DICOM_MODALITY_1_PORT\}\}', value: "{{ dicom_modality_1_port }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_NAME\}\}', value: "{{ dicom_modality_2_name }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_AET\}\}', value: "{{ dicom_modality_2_aet }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_HOST\}\}', value: "{{ dicom_modality_2_host }}" }
+        - { pattern: '\{\{DICOM_MODALITY_2_PORT\}\}', value: "{{ dicom_modality_2_port }}" }
+      when: (tmp_clone + '/deployment/orthanc.json.template') is file
+
+    - name: Copy orthanc.json template first
+      copy:
+        src: "{{ tmp_clone }}/deployment/orthanc.json.template"
+        dest: "{{ deployment_path }}/orthanc.json"
+      when: (tmp_clone + '/deployment/orthanc.json.template') is file
+
+    - name: Cleanup temporary clone
+      file:
+        path: "{{ tmp_clone }}"
+        state: absent
+
+    # ==========================================
+    # DOCKER DEPLOYMENT
+    # ==========================================
+    - name: Stop existing Orthanc containers
+      community.docker.docker_compose:
+        project_src: "{{ deployment_path }}"
+        state: absent
+        remove_orphans: yes
+      ignore_errors: yes
+
+    - name: Wait for cleanup
+      pause:
+        seconds: 3
+
+    - name: Start Orthanc with docker-compose
+      community.docker.docker_compose:
+        project_src: "{{ deployment_path }}"
+        state: present
+        build: yes
+
+    # ==========================================
+    # HEALTH CHECKS
+    # ==========================================
+    - name: Wait for Orthanc initialization
+      pause:
+        seconds: 10
+
+    - name: Health check - multiple endpoints
+      uri:
+        url: "{{ item }}"
+        method: GET
+        timeout: 5
+      register: health_results
+      until: health_results.status == 200
+      retries: 30
+      delay: 5
+      loop:
+        - "http://localhost:{{ http_port }}/app/explorer.html"
+        - "http://localhost:{{ http_port }}/statistics"
+        - "http://localhost:{{ http_port }}/system"
+
+    - name: Test QueuePlugin endpoint
+      uri:
+        url: "http://localhost:{{ http_port }}/send"
+        method: POST
+        body: "test=1"
+        timeout: 5
+        status_code: [200, 400, 405]
+      ignore_errors: yes
+
+    - name: Get system info for plugin verification
+      uri:
+        url: "http://localhost:{{ http_port }}/system"
+        method: GET
+        return_content: yes
+      register: system_info
+
+    - name: Show container status
+      shell: |
+        cd {{ deployment_path }}
+        docker compose ps
+      register: container_status
+
+    - name: Get recent logs for plugin verification
+      shell: |
+        cd {{ deployment_path }}
+        docker compose logs --tail=20
+      register: recent_logs
+
+    - name: Verify plugin versions in logs
+      set_fact:
+        plugins_verified: >-
+          {{
+            (recent_logs.stdout | regex_search('ExportPlugin.*2\.1')) and
+            (recent_logs.stdout | regex_search('QueuePlugin.*2\.1')) and
+            (recent_logs.stdout | regex_search('FilesenderPlugin.*2\.2'))
+          }}
+
+    # ==========================================
+    # LOGGING AND COMPLETION
+    # ==========================================
+    - name: Create deployment log
+      lineinfile:
+        path: "{{ home_dir }}/logs/deployment/deploy-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}.log"
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "{{ ansible_date_time.iso8601 }}: Deployment completed successfully"
+        - "  - Orthanc URL: http://localhost:{{ http_port }}"
+        - "  - Plugins: ExportPlugin, QueuePlugin, FilesenderPlugin"
+
+    - name: Create latest log symlink
+      file:
+        src: "{{ home_dir }}/logs/deployment/deploy-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}.log"
+        dest: "{{ home_dir }}/logs/deployment/latest.log"
+        state: link
+        force: yes
+
+    - name: Display final status
+      debug:
+        msg:
+          - "============================================="
+          - "✅ DEPLOYMENT COMPLETED SUCCESSFULLY!"
+          - "============================================="
+          - "Orthanc Web Interface: http://localhost:{{ http_port }}"
+          - "DICOM Port: {{ dicom_port }}"
+          - "Plugin Versions: {{ 'VERIFIED' if plugins_verified else 'INCONCLUSIVE' }}"
+          - "Container Status:"
+          - "{{ container_status.stdout_lines }}"
+          - "============================================="
+          - "Container Logs: docker compose logs -f"
+          - "FileSender Logs: {{ home_dir }}/logs/filesender/"
+          - "Log Monitor: {{ home_dir }}/log_monitor.sh"
+          - "============================================="

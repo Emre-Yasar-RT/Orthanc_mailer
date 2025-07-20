@@ -1,0 +1,72 @@
+{
+    "Name": "Orthanc",
+    "StorageDirectory": "/var/lib/orthanc/storage",
+    "IndexDirectory": "/var/lib/orthanc/index",
+    "LogDirectory": "/var/log/orthanc",
+
+    "HttpServerEnabled": true,
+    "HttpPort": {{HTTP_PORT}},
+    "HttpDescribeErrors": true,
+    "HttpCompressionEnabled": true,
+    "HttpPutEnabled": true,
+    "HttpModifyEnabled": true,
+    "RestApiWriteToFileSystemEnabled": true,
+    "HttpVerbose": true,
+    "LogExportedResources": true,
+    "OverwriteInstances": true,
+
+    "RemoteAccessAllowed": true,
+    "AuthenticationEnabled": false,
+
+    "Logger": {
+        "Level": "{{LOG_LEVEL}}"
+    },
+
+    "DicomServerEnabled": true,
+    "DicomPort": {{DICOM_PORT}},
+    "BindAddress": "0.0.0.0",
+
+    "Plugins": [
+        "/plugins/libExportPlugin.so",
+        "/plugins/libQueuePlugin.so",
+        "/plugins/libFilesenderPlugin.so"
+    ],
+
+    "PythonPath": "/plugins/python",
+    "PythonScript": "/plugins/archive-plugin/archive.py",
+
+    "ExportDirectory": "/exports",
+    "ArchiveDirectory": "/var/lib/orthanc/archive",
+
+    "DicomAet": "{{DICOM_AET}}",
+    "DicomCheckCalledAet": true,
+    "DicomAlwaysAllowEcho": true,
+    "DicomAlwaysAllowFind": false,
+    "DicomAlwaysAllowGet": true,
+    "DicomAlwaysAllowMove": true,
+    "AnyIncomingConnection": true,
+    "MaximumStorageSize": 0,
+    "MaximumPatientCount": 0,
+    "Verbose": true,
+    "DicomWebEnabled": false,
+
+    "DicomModalities": {
+        "{{DICOM_MODALITY_1_NAME}}": [
+            "{{DICOM_MODALITY_1_AET}}",
+            "{{DICOM_MODALITY_1_HOST}}",
+            {{DICOM_MODALITY_1_PORT}}
+        ],
+        "{{DICOM_MODALITY_2_NAME}}": [
+            "{{DICOM_MODALITY_2_AET}}",
+            "{{DICOM_MODALITY_2_HOST}}",
+            {{DICOM_MODALITY_2_PORT}}
+        ]
+    },
+
+    "StableAge": 10,
+    "StableAgeSeries": 10,
+    "StableAgeStudy": 10,
+    "StableAgePatient": 10,
+    "ExtendedChanges": true,
+    "ArchiveAfterDays": {{ARCHIVE_AGE_DAYS}}
+}
