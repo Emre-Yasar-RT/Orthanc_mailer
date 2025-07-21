@@ -5,7 +5,6 @@
 # ============================
 export HOME_DIR="/home/pacs"
 export REPO="git@github.com:Emre-Yasar-RT/Orthanc_mailer.git"
-
 export SERVER_HOSTNAME="test_server.ch"
 
 export HTTP_PORT="80"
@@ -45,9 +44,27 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     SCRIPT_PATH="$(dirname "$(realpath "$0")")/deploy.yml"
     echo "[INFO] Starting Ansible deployment via $SCRIPT_PATH"
     
-    # Pass all environment variables to Ansible
+    # Pass all variables as extra-vars to Ansible
     ansible-playbook "$SCRIPT_PATH" \
         --inventory localhost, \
         --connection local \
-        --become
+        --become \
+        --extra-vars "home_dir=$HOME_DIR" \
+        --extra-vars "repo=$REPO" \
+        --extra-vars "server_hostname=$SERVER_HOSTNAME" \
+        --extra-vars "http_port=$HTTP_PORT" \
+        --extra-vars "dicom_port=$DICOM_PORT" \
+        --extra-vars "dicom_aet=$DICOM_AET" \
+        --extra-vars "log_level=$LOG_LEVEL" \
+        --extra-vars "archive_age_days=$ARCHIVE_AGE_DAYS" \
+        --extra-vars "dicom_modality_1_name=$DICOM_MODALITY_1_NAME" \
+        --extra-vars "dicom_modality_1_aet=$DICOM_MODALITY_1_AET" \
+        --extra-vars "dicom_modality_1_host=$DICOM_MODALITY_1_HOST" \
+        --extra-vars "dicom_modality_1_port=$DICOM_MODALITY_1_PORT" \
+        --extra-vars "dicom_modality_2_name=$DICOM_MODALITY_2_NAME" \
+        --extra-vars "dicom_modality_2_aet=$DICOM_MODALITY_2_AET" \
+        --extra-vars "dicom_modality_2_host=$DICOM_MODALITY_2_HOST" \
+        --extra-vars "dicom_modality_2_port=$DICOM_MODALITY_2_PORT" \
+        --extra-vars "filesender_username=$FILESENDER_USERNAME" \
+        --extra-vars "filesender_api_key=$FILESENDER_API_KEY"
 fi

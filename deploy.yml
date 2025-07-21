@@ -5,29 +5,10 @@
   gather_facts: yes
   become: yes
   
-  # Read configuration from environment variables (set by deploy-config.sh)
+  # Variables passed from deploy-config.sh via --extra-vars
   vars:
-    home_dir: "{{ ansible_env.HOME_DIR }}"
-    repo: "{{ ansible_env.REPO }}"
-    server_hostname: "{{ ansible_env.SERVER_HOSTNAME }}"
-    http_port: "{{ ansible_env.HTTP_PORT }}"
-    dicom_port: "{{ ansible_env.DICOM_PORT }}"
-    dicom_aet: "{{ ansible_env.DICOM_AET }}"
-    log_level: "{{ ansible_env.LOG_LEVEL }}"
-    archive_age_days: "{{ ansible_env.ARCHIVE_AGE_DAYS }}"
-    
-    dicom_modality_1_name: "{{ ansible_env.DICOM_MODALITY_1_NAME }}"
-    dicom_modality_1_aet: "{{ ansible_env.DICOM_MODALITY_1_AET }}"
-    dicom_modality_1_host: "{{ ansible_env.DICOM_MODALITY_1_HOST }}"
-    dicom_modality_1_port: "{{ ansible_env.DICOM_MODALITY_1_PORT }}"
-    
-    dicom_modality_2_name: "{{ ansible_env.DICOM_MODALITY_2_NAME }}"
-    dicom_modality_2_aet: "{{ ansible_env.DICOM_MODALITY_2_AET }}"
-    dicom_modality_2_host: "{{ ansible_env.DICOM_MODALITY_2_HOST }}"
-    dicom_modality_2_port: "{{ ansible_env.DICOM_MODALITY_2_PORT }}"
-    
-    filesender_username: "{{ ansible_env.FILESENDER_USERNAME }}"
-    filesender_api_key: "{{ ansible_env.FILESENDER_API_KEY }}"
+    # Variables are now passed directly via --extra-vars instead of ansible_env
+    # home_dir, repo, server_hostname, etc. are set via --extra-vars
     
     # Derived paths
     deployment_path: "{{ home_dir }}/deployment"
@@ -36,22 +17,22 @@
     cron_flag: "{{ home_dir }}/.cronjob-initialized"
     log_monitor_script: "{{ home_dir }}/log_monitor.sh"
     orthanc_url: "http://{{ server_hostname }}:{{ http_port }}"
-    cron_user: "pacs"
+    cron_user: "{{ home_dir.split('/')[2] }}" 
 
   tasks:
     # ==========================================
     # VALIDATION
     # ==========================================
-    - name: Validate required environment variables
+    - name: Validate required variables
       assert:
         that:
-          - ansible_env.HOME_DIR is defined
-          - ansible_env.REPO is defined
-          - ansible_env.HTTP_PORT is defined
-          - ansible_env.DICOM_PORT is defined
-          - ansible_env.FILESENDER_USERNAME is defined
-          - ansible_env.FILESENDER_API_KEY is defined
-        fail_msg: "Required environment variables missing. Please run deploy-config.sh"
+          - home_dir is defined
+          - repo is defined
+          - http_port is defined
+          - dicom_port is defined
+          - filesender_username is defined
+          - filesender_api_key is defined
+        fail_msg: "Required variables missing. Please run deploy-config.sh"
 
     - name: Display deployment configuration
       debug:
@@ -69,12 +50,14 @@
       file:
         path: "{{ tmp_clone }}"
         state: absent
+      become: no
 
     - name: Clone repository
       git:
         repo: "{{ repo }}"
         dest: "{{ tmp_clone }}"
         force: yes
+      become: no
 
     - name: Remove existing deployment directory
       file:
@@ -168,12 +151,17 @@
     # ==========================================
     # CONFIGURATION TEMPLATES
     # ==========================================
+    - name: Copy .env template first
+      copy:
+        src: "{{ tmp_clone }}/deployment/.env.template"
+        dest: "{{ deployment_path }}/.env"
+      when: (tmp_clone + '/deployment/.env.template') is file
+
     - name: Generate .env file from template
       replace:
         path: "{{ deployment_path }}/.env"
         regexp: "{{ item.pattern }}"
         replace: "{{ item.value }}"
-        backup: yes
       loop:
         - { pattern: '\{\{HOME_DIR\}\}', value: "{{ home_dir }}" }
         - { pattern: '\{\{REPO\}\}', value: "{{ repo }}" }
@@ -196,18 +184,17 @@
         - { pattern: '\{\{FILESENDER_API_KEY\}\}', value: "{{ filesender_api_key }}" }
       when: (tmp_clone + '/deployment/.env.template') is file
 
-    - name: Copy .env template first
+    - name: Copy orthanc.json template first
       copy:
-        src: "{{ tmp_clone }}/deployment/.env.template"
-        dest: "{{ deployment_path }}/.env"
-      when: (tmp_clone + '/deployment/.env.template') is file
+        src: "{{ tmp_clone }}/deployment/orthanc.json.template"
+        dest: "{{ deployment_path }}/orthanc.json"
+      when: (tmp_clone + '/deployment/orthanc.json.template') is file
 
     - name: Generate orthanc.json from template
       replace:
         path: "{{ deployment_path }}/orthanc.json"
         regexp: "{{ item.pattern }}"
         replace: "{{ item.value }}"
-        backup: yes
       loop:
         - { pattern: '\{\{HTTP_PORT\}\}', value: "{{ http_port }}" }
         - { pattern: '\{\{DICOM_PORT\}\}', value: "{{ dicom_port }}" }
@@ -224,12 +211,6 @@
         - { pattern: '\{\{DICOM_MODALITY_2_PORT\}\}', value: "{{ dicom_modality_2_port }}" }
       when: (tmp_clone + '/deployment/orthanc.json.template') is file
 
-    - name: Copy orthanc.json template first
-      copy:
-        src: "{{ tmp_clone }}/deployment/orthanc.json.template"
-        dest: "{{ deployment_path }}/orthanc.json"
-      when: (tmp_clone + '/deployment/orthanc.json.template') is file
-
     - name: Cleanup temporary clone
       file:
         path: "{{ tmp_clone }}"
@@ -239,10 +220,9 @@
     # DOCKER DEPLOYMENT
     # ==========================================
     - name: Stop existing Orthanc containers
-      community.docker.docker_compose:
-        project_src: "{{ deployment_path }}"
-        state: absent
-        remove_orphans: yes
+      shell: |
+        cd {{ deployment_path }}
+        docker compose down --remove-orphans || true
       ignore_errors: yes
 
     - name: Wait for cleanup
@@ -250,10 +230,10 @@
         seconds: 3
 
     - name: Start Orthanc with docker-compose
-      community.docker.docker_compose:
-        project_src: "{{ deployment_path }}"
-        state: present
-        build: yes
+      shell: |
+        cd {{ deployment_path }}
+        docker compose up -d --build
+      register: docker_start_result
 
     # ==========================================
     # HEALTH CHECKS
@@ -337,7 +317,7 @@
       debug:
         msg:
           - "============================================="
-          - "✅ DEPLOYMENT COMPLETED SUCCESSFULLY!"
+          - "DEPLOYMENT COMPLETED SUCCESSFULLY!"
           - "============================================="
           - "Orthanc Web Interface: http://localhost:{{ http_port }}"
           - "DICOM Port: {{ dicom_port }}"
