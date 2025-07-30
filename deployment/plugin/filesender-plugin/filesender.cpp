@@ -38,7 +38,7 @@ void log_to_file(const std::string& message) {
     std::string logsDir = getLogsDir();
     std::string logFile = getLogFile();
     
-    // Debug: also after stderr for Docker-Logs
+    // Debug: Auch nach stderr für Docker-Logs
     std::cerr << "[DEBUG] " << message << std::endl;
     
     try {
@@ -70,7 +70,7 @@ void load_mapping(std::unordered_map<std::string, std::string>& mapping) {
 
     std::ifstream file(MAPPING_FILE);
     if (!file.is_open()) {
-        log_to_file("Error while opening mapping.json.");
+        log_to_file("Failed to open mapping.json.");
         return;
     }
 
@@ -139,7 +139,7 @@ bool UploadFileSync(const std::string& filepath, const std::string& email, const
         std::string line;
         std::string errorDetails;
         int lineCount = 0;
-        while (std::getline(errorLog, line) && lineCount < 20) {  // Nur erste 20 Zeilen
+        while (std::getline(errorLog, line) && lineCount < 20) {
             errorDetails += line + "\\n";
             lineCount++;
         }
@@ -171,7 +171,7 @@ void cleanup_mapping() {
     std::string tempFile = MAPPING_FILE + ".tmp";
     std::ofstream file(tempFile);
     if (!file.is_open()) {
-        log_to_file("Error while opening temp mapping.json.");
+        log_to_file("Failed to open temp mapping.json to write.");
         return;
     }
 
@@ -192,7 +192,7 @@ void FilesenderThread()
     OrthancPluginLogInfo(globalContext, "Filesender-Watcher started.");
     log_to_file("Filesender-Watcher started (Synchronous Uploads)");
 
-    std::set<std::string> ignoredFiles; // file without E-Mail shall not logged endlessly
+    std::set<std::string> ignoredFiles; // files without e-mail should not be logged endlessy
 
     while (runWatcher) {
         try {
@@ -221,7 +221,7 @@ void FilesenderThread()
                 auto recipient = mapping.find(filename);
                 if (recipient == mapping.end()) {
                     if (ignoredFiles.find(filename) == ignoredFiles.end()) {
-                        std::string msg = "No E-Mail-Adresse known for: " + filename + " (will be ignored)";
+                        std::string msg = "No e-mail-adress known for: " + filename + " (will be ignored)";
                         log_to_file(msg);
                         ignoredFiles.insert(filename);
                     }
@@ -237,7 +237,7 @@ void FilesenderThread()
                     continue;
                 }
 
-                std::string msg = "File found: " + filename + " -> Receiver: " + recipient->second;
+                std::string msg = "File found: " + filename + " -> Recipient: " + recipient->second;
                 log_to_file(msg);
 
                 bool uploadSuccess = UploadFileSync(full_path.string(), recipient->second, filename);
@@ -262,7 +262,7 @@ void FilesenderThread()
             cleanup_mapping();
 
         } catch (const std::exception& e) {
-            std::string error_msg = "General failure in FilesenderThread: " + std::string(e.what());
+            std::string error_msg = "General error in FilesenderThread: " + std::string(e.what());
             log_to_file(error_msg);
         }
 
@@ -286,7 +286,7 @@ extern "C"
             OrthancPluginLogError(context, ("Failed to create directories: " + std::string(e.what())).c_str());
         }
         
-        OrthancPluginLogInfo(context, "FilesenderPlugin startet (Synchronous).");
+        OrthancPluginLogInfo(context, "FilesenderPlugin started (Synchronous).");
         log_to_file("FilesenderPlugin initialized");
         
         watcherThread = std::thread(FilesenderThread);

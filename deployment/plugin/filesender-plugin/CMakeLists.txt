@@ -16,16 +16,16 @@ include_directories(
     ${Boost_INCLUDE_DIRS}
 )
 
-# JSONCPP statisch einbinden
+# JSONCPP static
 file(GLOB JSONCPP_SOURCES "sdk/jsoncpp/src/lib_json/*.cpp")
 add_library(jsoncpp STATIC ${JSONCPP_SOURCES})
 set_target_properties(jsoncpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# PUGIXML (optional)
+# PUGIXML
 add_library(pugixml STATIC sdk/pugixml/src/pugixml.cpp)
 set_target_properties(pugixml PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# Plugin bauen
+# build plugin
 add_library(FilesenderPlugin MODULE filesender.cpp)
 
 target_compile_definitions(FilesenderPlugin PRIVATE
@@ -41,7 +41,6 @@ target_link_libraries(FilesenderPlugin
     pthread
 )
 
-# Optional: Output-Verzeichnis
 set_target_properties(FilesenderPlugin PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY /output
 )

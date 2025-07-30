@@ -1,0 +1,37 @@
+# Use same base as your working container  
+FROM jodogne/orthanc:latest
+
+# Install build dependencies
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    cmake g++ make git mercurial \
+    python3-dev pkg-config \
+    libjsoncpp-dev libboost-all-dev \
+    curl ca-certificates \
+    unzip uuid-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /python-plugin
+
+# Clone Python plugin version 4.3
+RUN hg clone https://orthanc.uclouvain.be/hg/orthanc-python . && \
+    echo "Available tags:" && hg tags && \
+    echo "Using OrthancPython-4.3 (stable version)" && \
+    hg update OrthancPython-4.3
+
+# Build with framework version that plugin 4.3 supports
+RUN cmake \
+    -DALLOW_DOWNLOADS=ON \
+    -DORTHANC_FRAMEWORK_SOURCE=web \
+    -DORTHANC_FRAMEWORK_VERSION=1.11.0 \
+    -DPYTHON_VERSION=3.11 \
+    -DSTATIC_BUILD=OFF \
+    -S . -B build && \
+    cmake --build build
+
+# Extract .so file
+RUN mkdir -p /output && \
+    find build -name 'libOrthancPython.so' -exec cp {} /output/ \; && \
+    ls -la /output/
+
+CMD ["sleep", "infinity"]

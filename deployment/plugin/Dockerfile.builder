@@ -37,7 +37,7 @@ RUN git clone --depth 1 https://github.com/zeux/pugixml.git sdk/pugixml
 RUN sed -i 's/return p.filename();/return p.filename().string();/' sdk/OrthancFramework/Sources/FileStorage/FilesystemStorage.cpp || true && \
     sed -i 's/std::string f = it->path().filename();/std::string f = it->path().filename().string();/' sdk/OrthancFramework/Sources/HttpServer/FilesystemHttpHandler.cpp || true
 
-# Build both plugins
+# Build plugins (Export, Queue, FileSender)
 RUN cmake -S . -B build && cmake --build build
 
 # save .so-files

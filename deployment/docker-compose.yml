@@ -1,49 +1,127 @@
 version: "3.8"
 
 services:
-  orthanc:
+  # ============================
+  # ORTHANC INGEST (PACS)
+  # ============================
+  orthanc-ingest:
     build:
       context: .
       dockerfile: Dockerfile
     platform: linux/amd64
+    container_name: orthanc-ingest
     ports:
-      - "${HOST_HTTP_PORT}:${HOST_HTTP_PORT}"
-      - "${HOST_DICOM_PORT}:${HOST_DICOM_PORT}"
+      - "${HTTP_PORT}:8042"           # HTTP API external
+      - "${DICOM_PORT}:${DICOM_PORT}" # DICOM Port external (CT-Scanner)
     volumes:
-      # Persistent Orthanc-database and Storage
-      - orthanc-storage:/var/lib/orthanc/storage    # Active DICOM-Files  
-      - orthanc-index:/var/lib/orthanc/index        # Orthanc-Database
-      - orthanc-logs:/var/log/orthanc               # Logs
-      
-      # Archive (old studies as ZIP)
-      - orthanc-archive:/var/lib/orthanc/archive    
-      
-      # Configuration
-      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
-      - "${HOST_EXPORTS_PATH}:/exports"
-      - ./plugin/export-plugin/libExportPlugin.so:/plugins/libExportPlugin.so:ro
-      - ./plugin/queue-plugin/libQueuePlugin.so:/plugins/libQueuePlugin.so:ro
-      - ./plugin/filesender-plugin/libFilesenderPlugin.so:/plugins/libFilesenderPlugin.so:ro
-      - "${HOST_MAILQUEUE_PATH}:/mailqueue"
+      - ${HOME_DIR}/var/lib/orthanc-ingest/storage:/var/lib/orthanc/storage
+      - ${HOME_DIR}/var/lib/orthanc-ingest/index:/var/lib/orthanc/index
+      - ${HOME_DIR}/var/log/orthanc-ingest:/var/log/orthanc
+      - ${HOME_DIR}/var/lib/orthanc-ingest/archive:/var/lib/orthanc/archive
+      - ./orthanc-ingest.json:/etc/orthanc/orthanc.json:ro
+      - ./plugin/orthanc-python-plugin/libOrthancPython.so:/plugins/libOrthancPython.so:ro
+      - ./plugin/archive-plugin/archive.py:/plugins/archive-plugin/archive.py:ro
       - "${HOME_DIR}/logs:/logs"
     environment:
       - ARCHIVE_ENABLED=true
-      - ARCHIVE_AGE_DAYS=730
+      - ARCHIVE_AGE_DAYS=${ARCHIVE_AGE_DAYS}
       - ARCHIVE_PATH=/var/lib/orthanc/archive
-      - ORTHANC_URL=${ORTHANC_URL}
+      - ORTHANC_URL=http://orthanc-ingest:8042
+      - SERVER_HOSTNAME=${SERVER_HOSTNAME}
+      - HOME_DIR=${HOME_DIR}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8042/system || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - orthanc-network
+
+  # ============================
+  # ORTHANC PROCESSING
+  # ============================
+  orthanc-processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    container_name: orthanc-processing
+    expose:
+      - "8043"
+      - "${DICOM_PORT}"  # Internal DICOM Port for forwarding
+    volumes:
+      # Temporary storage (not persistent)
+      - orthanc-processing-storage:/var/lib/orthanc/storage
+      - orthanc-processing-index:/var/lib/orthanc/index
+      - ${HOME_DIR}/var/log/orthanc-processing:/var/log/orthanc
+      - ./orthanc-processing.json:/etc/orthanc/orthanc.json:ro
+      - "${HOME_DIR}/exports:/exports"
+      - "${HOME_DIR}/mailqueue:/mailqueue"
+      - ./plugin/export-plugin/libExportPlugin.so:/plugins/libExportPlugin.so:ro
+      - ./plugin/queue-plugin/libQueuePlugin.so:/plugins/libQueuePlugin.so:ro
+      - ./plugin/filesender-plugin/libFilesenderPlugin.so:/plugins/libFilesenderPlugin.so:ro
+      - "${HOME_DIR}/logs:/logs"
+    environment:
+      - ARCHIVE_ENABLED=false
+      - ORTHANC_URL=http://orthanc-processing:8043
       - FILESENDER_USERNAME=${FILESENDER_USERNAME}
       - FILESENDER_API_KEY=${FILESENDER_API_KEY}
       - SERVER_HOSTNAME=${SERVER_HOSTNAME}
-      - HOME_DIR=${HOME_DIR} 
+      - HOME_DIR=${HOME_DIR}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8043/system || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - orthanc-network
+    depends_on:
+      - orthanc-ingest
 
+  # ============================
+  # SUPPORT SERVICES
+  # ============================
+  watcher:
+    image: python:3.11-slim
+    container_name: watcher
+    volumes:
+        - .:/app:ro
+        - "${HOME_DIR}/logs:/logs"
+        - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+        - ORTHANC_URL=http://orthanc-ingest:8042
+        - FILESENDER_USERNAME=${FILESENDER_USERNAME}
+        - FILESENDER_API_KEY=${FILESENDER_API_KEY}
+        - SERVER_HOSTNAME=${SERVER_HOSTNAME}
+        - HOME_DIR=${HOME_DIR}
+    command: >
+        bash -c "
+        apt-get update -qq && 
+        apt-get install -y -qq curl &&
+        curl -fsSL https://get.docker.com | sh &&
+        pip install requests && 
+        python3 /app/watcher.py
+        "
+    restart: unless-stopped
+    depends_on:
+      - orthanc-ingest
+    user: root
+    networks:
+      - orthanc-network
+  
+
+# ============================
+# VOLUMES & NETWORKS
+# ============================
 volumes:
-  orthanc-storage:     # DICOM-Files (.dcm)
-    driver: local
-  orthanc-index:       # Orthanc-dateabase (SQLite)
-    driver: local  
-  orthanc-logs:        # Logs
-    driver: local
-    
-  # ARCHIVE: Old Studies as ZIP
-  orthanc-archive:     
-    driver: local
+  # Temporary Volumes for Orthanc-Processing (not persistent)
+  orthanc-processing-storage:
+  orthanc-processing-index:
+
+networks:
+  orthanc-network:
+    driver: bridge

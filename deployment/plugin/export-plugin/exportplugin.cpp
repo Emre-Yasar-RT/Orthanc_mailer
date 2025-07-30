@@ -15,20 +15,21 @@
 #include <set>
 #include <regex>
 #include <unistd.h>
+#include <iomanip>
 
 const std::regex EMAIL_REGEX(R"(([\w\.-]+@[\w\.-]+\.\w+))");
 const std::regex PASSWORD_REGEX(R"(pw\s*=\s*([^\s]+))");
 std::string GetOrthancUrl() {
     const char* envUrl = std::getenv("ORTHANC_URL");
     if (!envUrl) {
-        throw std::runtime_error("Environment-variable ORTHANC_URL not set!");
+        throw std::runtime_error("Umgebungsvariable ORTHANC_URL nicht gesetzt!");
     }
     return std::string(envUrl);
 }
 const std::string ORTHANC_URL = GetOrthancUrl();
 
 OrthancPluginContext* globalContext = NULL;
-std::set<std::string> processedStudies;
+std::set<std::string> activeStudies;
 std::mutex mutex;
 
 // libcurl callback
@@ -97,14 +98,26 @@ static std::string Sanitize(const std::string& input) {
     return result;
 }
 
-//  cleanup StudyDescription
+// Extract ALL emails from text dynamically
+std::vector<std::string> extractAllEmails(const std::string& text) {
+    std::vector<std::string> emails;
+    std::sregex_iterator start(text.begin(), text.end(), EMAIL_REGEX);
+    std::sregex_iterator end;
+    
+    for (std::sregex_iterator it = start; it != end; ++it) {
+        std::string email = it->str(1);
+        // avoid duplicate
+        if (std::find(emails.begin(), emails.end(), email) == emails.end()) {
+            emails.push_back(email);
+        }
+    }
+    return emails;
+}
+
+//  Clean StudyDescription
 bool CleanStudyDescriptionOnly(const std::string& studyId, const std::string& cleanDescription, std::string& newStudyIdOut) {
     Json::Value payload;
-    
-    //  remove Email/Password
     payload["Replace"]["StudyDescription"] = cleanDescription;
-    
-    //  cleanup StudyID
     payload["Replace"]["StudyID"] = cleanDescription.substr(0, 16);
     payload["Force"] = true;
 
@@ -115,8 +128,8 @@ bool CleanStudyDescriptionOnly(const std::string& studyId, const std::string& cl
     newStudyIdOut = extractId(modifyResponse);
     return !newStudyIdOut.empty();
 }
-
-bool UpdateMappingFileAtomic(const std::string& filename, const std::string& email) {
+// Support multiple emails
+bool UpdateMappingFileAtomic(const std::string& filename, const std::vector<std::string>& emails) {
     std::string tempMappingFile = "/exports/.mapping_temp.json";
     std::string finalMappingFile = "/exports/mapping.json";
     
@@ -138,13 +151,15 @@ bool UpdateMappingFileAtomic(const std::string& filename, const std::string& ema
         return false;
     }
     
-    // write old entries
+    // Write existing entries
     for (const auto& entry : existingEntries) {
         tempMapping << entry << "\n";
     }
     
-    // add new entries
-    tempMapping << "{\"file\": \"" << filename << "\", \"email\": \"" << email << "\"}\n";
+    // Create separate entry for each email
+    for (const auto& email : emails) {
+        tempMapping << "{\"file\": \"" << filename << "\", \"email\": \"" << email << "\"}\n";
+    }
     tempMapping.close();
     
     if (rename(tempMappingFile.c_str(), finalMappingFile.c_str()) != 0) {
@@ -156,8 +171,57 @@ bool UpdateMappingFileAtomic(const std::string& filename, const std::string& ema
     return true;
 }
 
-// Main export function with Race-Condition-Fixes
+// Dynamic send function for multiple recipients
+void sendToAllRecipients(const std::string& studyId, const std::string& finalFilename, const std::vector<std::string>& emails) {
+    for (size_t i = 0; i < emails.size(); ++i) {
+        const std::string& email = emails[i];
+        
+        std::string payload = "studyId=" + studyId + "&file=" + finalFilename + "&email=" + email;
+        
+        OrthancPluginLogInfo(globalContext, ("Calling QueuePlugin for recipient " + std::to_string(i+1) + "/" + std::to_string(emails.size()) + ": " + email).c_str());
+        
+        std::string queueUrl = ORTHANC_URL + "/send";
+        std::string curlCmd = "curl -X POST "
+                             "-H \"Content-Type: application/x-www-form-urlencoded\" "
+                             "-d \"" + payload + "\" "
+                             "\"" + queueUrl + "\" "
+                             "--max-time 30 --retry 3 --retry-delay 1 -v";
+        
+        OrthancPluginLogInfo(globalContext, ("Executing curl command: " + curlCmd).c_str());
+        
+        int curlResult = system(curlCmd.c_str());
+        if (curlResult != 0) {
+            OrthancPluginLogError(globalContext, ("QueuePlugin call failed for " + email + " with code: " + std::to_string(curlResult)).c_str());
+        } else {
+            OrthancPluginLogInfo(globalContext, ("QueuePlugin call completed successfully for: " + email).c_str());
+        }
+        
+        if (i < emails.size() - 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+}
+
+// Main export function with race condition fixes and multi-email support
 void ExportStudy(const std::string& studyId) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (activeStudies.find(studyId) != activeStudies.end()) {
+            OrthancPluginLogInfo(globalContext, ("Export already in progress for study: " + studyId).c_str());
+            return;
+        }
+        activeStudies.insert(studyId);
+    }
+    
+    // Cleanup guard for activeStudies
+    struct ActiveStudyGuard {
+        std::string studyId;
+        ~ActiveStudyGuard() {
+            std::lock_guard<std::mutex> lock(mutex);
+            activeStudies.erase(studyId);
+        }
+    } guard{studyId};
+    
     // Get study info
     std::string studyResponse = httpGet(ORTHANC_URL + "/studies/" + studyId);
     if (studyResponse.empty()) return;
@@ -170,7 +234,7 @@ void ExportStudy(const std::string& studyId) {
 
     std::string description = studyInfo["MainDicomTags"].get("StudyDescription", "").asString();
     
-    // Get ORIGINAL patient info
+    // Get original patient info
     std::string originalPatientId = "Unknown";
     if (studyInfo.isMember("ParentPatient")) {
         std::string patientResponse = httpGet(ORTHANC_URL + "/patients/" + studyInfo["ParentPatient"].asString());
@@ -185,23 +249,34 @@ void ExportStudy(const std::string& studyId) {
 
     std::string studyDate = studyInfo["MainDicomTags"].get("StudyDate", "nodate").asString();
 
-    // Extract email and password
-    std::smatch pwMatch, emailMatch;
+    // Extract all emails and password dynamically
+    std::vector<std::string> emails = extractAllEmails(description);
+    std::smatch pwMatch;
     std::string password = std::regex_search(description, pwMatch, PASSWORD_REGEX) ? pwMatch.str(1) : "default123";
-    std::string email = std::regex_search(description, emailMatch, EMAIL_REGEX) ? emailMatch.str(1) : "";
     
-    if (email.empty()) {
+    if (emails.empty()) {
         OrthancPluginLogError(globalContext, "No email found in StudyDescription");
         return;
     }
 
-    // Clean description ERST (für Filename-Berechnung)
+    OrthancPluginLogInfo(globalContext, ("Found " + std::to_string(emails.size()) + " email recipients").c_str());
+
+    // Clean description first (for filename calculation)
     std::string cleanedDescription = std::regex_replace(description, EMAIL_REGEX, "");
     cleanedDescription = std::regex_replace(cleanedDescription, PASSWORD_REGEX, "");
     cleanedDescription.erase(0, cleanedDescription.find_first_not_of(" \t"));
     cleanedDescription.erase(cleanedDescription.find_last_not_of(" \t") + 1);
 
-    std::string filenameBase = Sanitize(originalPatientId) + "_" + Sanitize(studyDate) + "_" + Sanitize(cleanedDescription);
+    // Add timestamp for unique filenames
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    
+    std::stringstream timestampStr;
+    timestampStr << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
+    timestampStr << "_" << std::setfill('0') << std::setw(3) << ms.count();
+
+    std::string filenameBase = Sanitize(originalPatientId) + "_" + Sanitize(studyDate) + "_" + Sanitize(cleanedDescription) + "_" + timestampStr.str();
     std::string tempZipPath = "/exports/." + filenameBase + "_temp.zip";
     std::string finalZipPath = "/exports/" + filenameBase + ".zip";
     std::string finalFilename = filenameBase + ".zip";
@@ -214,10 +289,10 @@ void ExportStudy(const std::string& studyId) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     
-    // Download ZIP from cleaned Study
+    // Download ZIP from cleaned study
     std::string zipData = httpGet(ORTHANC_URL + "/studies/" + newStudyId + "/archive");
     
-    // Fallback to original if needed
+    // Fallback to original if necessary
     if (zipData.empty()) {
         OrthancPluginLogWarning(globalContext, "Cleaned study ZIP failed, using original");
         zipData = httpGet(ORTHANC_URL + "/studies/" + studyId + "/archive");
@@ -251,12 +326,13 @@ void ExportStudy(const std::string& studyId) {
     
     sync();
     
-    // delete original study after new ZIP successfully created
+    // Delete original study after successful ZIP creation
     if (!newStudyId.empty()) {
         httpDelete(ORTHANC_URL + "/studies/" + studyId);
     }
 
-    if (!UpdateMappingFileAtomic(finalFilename, email)) {
+    // Update mapping for all emails
+    if (!UpdateMappingFileAtomic(finalFilename, emails)) {
         OrthancPluginLogError(globalContext, "Failed to update mapping file");
         return;
     }
@@ -265,43 +341,18 @@ void ExportStudy(const std::string& studyId) {
     
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    std::string payload = "studyId=" + studyId + "&file=" + finalFilename + "&email=" + email;
-    
-    OrthancPluginLogInfo(globalContext, ("Calling QueuePlugin with payload: " + payload).c_str());
-    
-    std::string queueUrl = ORTHANC_URL + "/send";
-    std::string curlCmd = "curl -X POST "
-                         "-H \"Content-Type: application/x-www-form-urlencoded\" "
-                         "-d \"" + payload + "\" "
-                         "\"" + queueUrl + "\" "
-                         "--max-time 30 --retry 3 --retry-delay 1 -v";
-    
-    OrthancPluginLogInfo(globalContext, ("Executing curl command: " + curlCmd).c_str());
-    
-    int curlResult = system(curlCmd.c_str());
-    if (curlResult != 0) {
-        OrthancPluginLogError(globalContext, ("QueuePlugin call failed with code: " + std::to_string(curlResult)).c_str());
-        return;
-    } else {
-        OrthancPluginLogInfo(globalContext, "QueuePlugin call completed successfully");
-    }
+    // Send to all recipients dynamically
+    sendToAllRecipients(studyId, finalFilename, emails);
 
-    OrthancPluginLogInfo(globalContext, ("Export completed successfully: " + finalFilename + " for " + email).c_str());
+    OrthancPluginLogInfo(globalContext, ("Export completed successfully: " + finalFilename + " for " + std::to_string(emails.size()) + " recipients").c_str());
 }
 
-// Callback
+// Callback for study processing
 OrthancPluginErrorCode OnChangeCallback(OrthancPluginChangeType changeType,
                                         OrthancPluginResourceType resourceType,
                                         const char* resourceId) {
     if (changeType == OrthancPluginChangeType_StableStudy && resourceType == OrthancPluginResourceType_Study) {
         std::string studyId(resourceId);
-        
-        // Prevent loops
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (processedStudies.find(studyId) != processedStudies.end()) return OrthancPluginErrorCode_Success;
-            processedStudies.insert(studyId);
-        }
         
         // Check for email in description
         std::string studyResponse = httpGet(ORTHANC_URL + "/studies/" + studyId);
@@ -316,9 +367,10 @@ OrthancPluginErrorCode OnChangeCallback(OrthancPluginChangeType changeType,
         if (!studyInfo.get("IsStable", false).asBool()) return OrthancPluginErrorCode_Success;
 
         std::string description = studyInfo["MainDicomTags"].get("StudyDescription", "").asString();
-        std::smatch match;
-        if (!std::regex_search(description, match, EMAIL_REGEX)) return OrthancPluginErrorCode_Success;
+        std::vector<std::string> emails = extractAllEmails(description);
+        if (emails.empty()) return OrthancPluginErrorCode_Success;
 
+        OrthancPluginLogInfo(globalContext, ("New study detected - processing for " + std::to_string(emails.size()) + " recipients").c_str());
         ExportStudy(studyId);
     }
     return OrthancPluginErrorCode_Success;
@@ -332,7 +384,7 @@ extern "C" {
         
         system("mkdir -p /exports");
         
-        OrthancPluginLogInfo(context, "ExportPlugin started - RACE-CONDITION-SAFE VERSION 2.1");
+        OrthancPluginLogInfo(context, "ExportPlugin started");
         OrthancPluginRegisterOnChangeCallback(context, OnChangeCallback);
         return 0;
     }
@@ -343,5 +395,5 @@ extern "C" {
     }
 
     ORTHANC_PLUGINS_API const char* OrthancPluginGetName() { return "ExportPlugin"; }
-    ORTHANC_PLUGINS_API const char* OrthancPluginGetVersion() { return "2.1"; }
+    ORTHANC_PLUGINS_API const char* OrthancPluginGetVersion() { return "2.8"; }
 }

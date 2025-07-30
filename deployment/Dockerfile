@@ -1,6 +1,6 @@
-FROM jodogne/orthanc-plugins
+FROM jodogne/orthanc:latest
 
-# Install only necessary dependencies (without orthanc-python package)
+# Install only required dependencies + JsonCpp runtime library
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         --no-install-recommends \
@@ -10,7 +10,9 @@ RUN apt-get update && \
         p7zip-full \
         unzip \
         python3-venv \
-        python3-dev && \
+        python3-dev \
+        libjsoncpp25 \
+        libboost-all-dev && \
     python3 -m venv /.venv && \
     /.venv/bin/pip install --upgrade pip && \
     /.venv/bin/pip install \
@@ -19,9 +21,9 @@ RUN apt-get update && \
         urllib3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# set pythonpath, for plugins to find
+# Set PYTHONPATH so plugins can locate it
 ENV PYTHONPATH=/.venv/lib/python3.11/site-packages
 
-# copy CLI-Tool
+# Copy CLI-Tool
 COPY switchfilesender/filesender_cli /filesender_cli
 COPY switchfilesender/filesender_cli/.filesender /root/.filesender

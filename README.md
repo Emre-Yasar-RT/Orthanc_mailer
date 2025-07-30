@@ -2,39 +2,29 @@
 
 An automated DICOM archiving and distribution system for Swiss universities, integrating Orthanc DICOM Server with SWITCH FileSender for secure medical image sharing.
 
+![Mailsersystem](files_for_readme/Plugin_Architecture.png)
+
 ## Overview
 
-This system automatically processes DICOM studies uploaded to Orthanc, extracts recipient information from study metadata, creates encrypted archives, and securely distributes them via SWITCH FileSender - Switzerland's academic file sharing service.
+This system automatically processes DICOM studies uploaded to Orthanc, extracts recipient information from study metadata, creates encrypted archives, and securely distributes them via SWITCH FileSender  (Switzerland's academic file sharing service.)
 
 ## Key Features
 
 - **Automated DICOM Processing**: Processes incoming medical images automatically
-- **Secure Distribution**: Uses SWITCH FileSender for encrypted file transfers up to 300GB
+- **Secure Distribution**: Uses SWITCH FileSender for encrypted file transfers up to 50GB
 - **Email-Based Workflow**: Recipients specified directly in DICOM StudyDescription
 - **Password Protection**: Creates encrypted ZIP archives with custom passwords
 - **Automatic Archiving**: Archives old studies to free up storage space
 - **Docker-Based**: Complete containerized deployment
-- **One-Click Setup**: Simple configuration and deployment with Ansible
+- **One-Click Setup**: Simple config with deploy.env.sh
 
-## Architecture
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
-│   DICOM Study   │    │  Orthanc Server  │    │   Custom Plugins    │
-│                 │───▶│                  │───▶│                     │
-│ StudyDescription│    │  - Web Interface │    │ - ExportPlugin      │
-│ Contains Email  │    │  - DICOM Storage │    │ - QueuePlugin       │
-└─────────────────┘    │  - Patient Data  │    │ - FilesenderPlugin  │
-                       └──────────────────┘    └─────────────────────┘
-                                ▲                         │
-                                │                         ▼
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
-│  Archive        │    │   Log Monitor    │    │  SWITCH FileSender  │
-│                 │◀───│                  │    │                     │
-│ - Old Studies   │    │ - System Logs    │    │ - Secure Upload     │
-│ - ZIP Archives  │    │ - Health Checks  │    │ - Email Notification│
-└─────────────────┘    └──────────────────┘    └─────────────────────┘
-```
+## Systemarchitecture
+
+![Systemarchitecture](files_for_readme/orthanc-dualarchitecture.png)
+
+- **orthanc-ingest:** DICOM-Empfang, PACS-Funktionalität, langfristige Archivierung
+- **orthanc-processing:** Temporäre Verarbeitung, Export, Versand, automatische Metadaten-Bereinigung
 
 ## Workflow
 
@@ -55,8 +45,8 @@ Study Name recipient@example.com pw=secure123
 ```
 
 **Format:**
-- `recipient@example.com` - Email address of the recipient
-- `pw=secure123` - Password for the encrypted ZIP file
+- `recipient@example.com`: Email address of the recipient
+- `pw=secure123`: Password for the encrypted ZIP file
 - Remaining text becomes the cleaned study description
 
 ## Quick Start
@@ -64,7 +54,6 @@ Study Name recipient@example.com pw=secure123
 ### Prerequisites
 
 - Linux server with Docker and Docker Compose
-- Ansible (automatically installed if missing)
 - Git access to the repository
 - SWITCH FileSender account (for Swiss universities)
 
@@ -84,8 +73,8 @@ Study Name recipient@example.com pw=secure123
 
    Configure your settings:
    ```bash
-   export HOME_DIR="/home/pacs"
-   export REPO="git@github.com:your-org/orthanc-mailer.git"
+   export HOME_DIR="location_of_deployment"
+   export REPO="git@github.com:Emre-Yasar-RT/Orthanc_mailer.git"
    export SERVER_HOSTNAME="your-server.domain.ch"
    export HTTP_PORT="80"
    export DICOM_PORT="11112"
@@ -116,7 +105,7 @@ That's it! The system will:
 
 ### Access
 
-- **Orthanc Web Interface**: `http://your-server:80`
+- **Orthanc Web Interface**: `http://your-server:8042`
 - **DICOM Port**: `11112` (configure in your modalities)
 - **Logs**: `~/logs/` directory structure
 
